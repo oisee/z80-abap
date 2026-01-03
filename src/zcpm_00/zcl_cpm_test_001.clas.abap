@@ -1,0 +1,18 @@
+CLASS zcl_cpm_test_001 DEFINITION
+  PUBLIC
+  FINAL
+  CREATE PUBLIC.
+
+  PUBLIC SECTION.
+    METHODS hello
+      RETURNING VALUE(rv_message) TYPE string.
+
+  PROTECTED SECTION.
+  PRIVATE SECTION.
+ENDCLASS.
+
+CLASS zcl_cpm_test_001 IMPLEMENTATION.
+  METHOD hello.
+    rv_message = 'Hello from ZCL_CPM_TEST_001'.
+  ENDMETHOD.
+ENDCLASS.

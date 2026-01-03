@@ -10,6 +10,13 @@
     <LDBNAME>D$S</LDBNAME>
     <UCCHECK>X</UCCHECK>
    </PROGDIR>
+   <TPOOL>
+    <item>
+     <ID>R</ID>
+     <ENTRY>CP/M Emulator Speedrun Test</ENTRY>
+     <LENGTH>27</LENGTH>
+    </item>
+   </TPOOL>
   </asx:values>
  </asx:abap>
 </abapGit>

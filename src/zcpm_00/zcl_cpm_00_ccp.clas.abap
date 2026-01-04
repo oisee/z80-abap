@@ -26,7 +26,8 @@ CLASS zcl_cpm_00_ccp DEFINITION PUBLIC FINAL CREATE PUBLIC.
                 ev_run_program TYPE abap_bool
                 ev_program_data TYPE xstring
                 ev_program_name TYPE string
-                ev_program_args TYPE string.
+                ev_program_args TYPE string
+                ev_spectrum_mode TYPE abap_bool.  " TAP file = Spectrum mode
 
     METHODS get_prompt RETURNING VALUE(rv_prompt) TYPE string.
     METHODS get_welcome RETURNING VALUE(rv_welcome) TYPE string.
@@ -105,7 +106,7 @@ CLASS zcl_cpm_00_ccp IMPLEMENTATION.
           lv_arg TYPE string,
           lv_upper TYPE string.
 
-    CLEAR: ev_output, ev_run_program, ev_program_data, ev_program_name, ev_program_args.
+    CLEAR: ev_output, ev_run_program, ev_program_data, ev_program_name, ev_program_args, ev_spectrum_mode.
 
     lv_upper = to_upper( iv_command ).
     CONDENSE lv_upper.
@@ -188,13 +189,30 @@ CLASS zcl_cpm_00_ccp IMPLEMENTATION.
 
       WHEN OTHERS.
         DATA(lv_filename) = lv_cmd.
+        DATA(lv_is_tap) = abap_false.
+
+        " Check if explicit extension provided
         IF NOT lv_filename CS '.'.
-          lv_filename = lv_filename && '.COM'.
+          " Try .TAP first, then .COM
+          DATA(lv_tap_name) = lv_filename && '.TAP'.
+          DATA(lv_tap_data) = load_bin_file( lv_tap_name ).
+          IF lv_tap_data IS NOT INITIAL.
+            lv_filename = lv_tap_name.
+            lv_is_tap = abap_true.
+          ELSE.
+            lv_filename = lv_filename && '.COM'.
+          ENDIF.
+        ELSE.
+          " Check if .TAP extension
+          DATA(lv_upper_name) = to_upper( lv_filename ).
+          IF lv_upper_name CS '.TAP'.
+            lv_is_tap = abap_true.
+          ENDIF.
         ENDIF.
 
         " Try bin table first, then SMW0
         DATA(lv_data) = load_bin_file( lv_filename ).
-        IF lv_data IS INITIAL.
+        IF lv_data IS INITIAL AND lv_is_tap = abap_false.
           lv_data = load_smw0_file( lv_filename ).
         ENDIF.
 
@@ -203,7 +221,12 @@ CLASS zcl_cpm_00_ccp IMPLEMENTATION.
           ev_program_data = lv_data.
           ev_program_name = lv_filename.
           ev_program_args = lv_arg.
-          ev_output = |Loading { lv_filename }...{ c_crlf }|.
+          ev_spectrum_mode = lv_is_tap.
+          IF lv_is_tap = abap_true.
+            ev_output = |Loading Spectrum TAP: { lv_filename }...{ c_crlf }|.
+          ELSE.
+            ev_output = |Loading { lv_filename }...{ c_crlf }|.
+          ENDIF.
         ELSE.
           ev_output = |{ lv_cmd }?{ c_crlf }|.
         ENDIF.

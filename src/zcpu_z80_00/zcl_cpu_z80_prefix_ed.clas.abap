@@ -194,6 +194,131 @@ CLASS zcl_cpu_z80_prefix_ed IMPLEMENTATION.
         mo_cpu->set_f( lv_flags ).
         rv_cycles = 15.
 
+      WHEN 82.  " SBC HL,DE
+        lv_hl = mo_cpu->get_hl( ).
+        lv_de = mo_cpu->get_de( ).
+        lv_f = mo_cpu->get_f( ).
+        lv_carry_in = lv_f MOD 2.
+        lv_result = lv_hl - lv_de - lv_carry_in.
+        lv_carry = 0.
+        IF lv_result < 0. lv_carry = 1. lv_result = lv_result + 65536. ENDIF.
+        lv_flags = zif_cpu_z80_core=>c_flag_n.
+        IF lv_result = 0. lv_flags = lv_flags + zif_cpu_z80_core=>c_flag_z. ENDIF.
+        IF lv_result >= 32768. lv_flags = lv_flags + zif_cpu_z80_core=>c_flag_s. ENDIF.
+        IF lv_carry = 1. lv_flags = lv_flags + zif_cpu_z80_core=>c_flag_c. ENDIF.
+        lv_half = ( lv_hl MOD 4096 ) - ( lv_de MOD 4096 ) - lv_carry_in.
+        IF lv_half < 0. lv_flags = lv_flags + zif_cpu_z80_core=>c_flag_h. ENDIF.
+        lv_ov = 0.
+        IF lv_hl >= 32768 AND lv_de < 32768 AND lv_result < 32768. lv_ov = 1. ENDIF.
+        IF lv_hl < 32768 AND lv_de >= 32768 AND lv_result >= 32768. lv_ov = 1. ENDIF.
+        IF lv_ov = 1. lv_flags = lv_flags + zif_cpu_z80_core=>c_flag_pv. ENDIF.
+        mo_cpu->set_hl( lv_result ).
+        mo_cpu->set_f( lv_flags ).
+        rv_cycles = 15.
+
+      WHEN 90.  " ADC HL,DE
+        lv_hl = mo_cpu->get_hl( ).
+        lv_de = mo_cpu->get_de( ).
+        lv_f = mo_cpu->get_f( ).
+        lv_carry_in = lv_f MOD 2.
+        lv_result = lv_hl + lv_de + lv_carry_in.
+        lv_carry = 0.
+        IF lv_result >= 65536. lv_carry = 1. lv_result = lv_result MOD 65536. ENDIF.
+        lv_flags = 0.
+        IF lv_result = 0. lv_flags = lv_flags + zif_cpu_z80_core=>c_flag_z. ENDIF.
+        IF lv_result >= 32768. lv_flags = lv_flags + zif_cpu_z80_core=>c_flag_s. ENDIF.
+        IF lv_carry = 1. lv_flags = lv_flags + zif_cpu_z80_core=>c_flag_c. ENDIF.
+        lv_half = ( lv_hl MOD 4096 ) + ( lv_de MOD 4096 ) + lv_carry_in.
+        IF lv_half >= 4096. lv_flags = lv_flags + zif_cpu_z80_core=>c_flag_h. ENDIF.
+        lv_ov = 0.
+        IF lv_hl < 32768 AND lv_de < 32768 AND lv_result >= 32768. lv_ov = 1. ENDIF.
+        IF lv_hl >= 32768 AND lv_de >= 32768 AND lv_result < 32768. lv_ov = 1. ENDIF.
+        IF lv_ov = 1. lv_flags = lv_flags + zif_cpu_z80_core=>c_flag_pv. ENDIF.
+        mo_cpu->set_hl( lv_result ).
+        mo_cpu->set_f( lv_flags ).
+        rv_cycles = 15.
+
+      WHEN 98.  " SBC HL,HL
+        lv_hl = mo_cpu->get_hl( ).
+        lv_f = mo_cpu->get_f( ).
+        lv_carry_in = lv_f MOD 2.
+        lv_result = 0 - lv_carry_in.
+        lv_carry = 0.
+        IF lv_result < 0. lv_carry = 1. lv_result = lv_result + 65536. ENDIF.
+        lv_flags = zif_cpu_z80_core=>c_flag_n.
+        IF lv_result = 0. lv_flags = lv_flags + zif_cpu_z80_core=>c_flag_z. ENDIF.
+        IF lv_result >= 32768. lv_flags = lv_flags + zif_cpu_z80_core=>c_flag_s. ENDIF.
+        IF lv_carry = 1. lv_flags = lv_flags + zif_cpu_z80_core=>c_flag_c. ENDIF.
+        IF lv_carry_in = 1. lv_flags = lv_flags + zif_cpu_z80_core=>c_flag_h. ENDIF.
+        mo_cpu->set_hl( lv_result ).
+        mo_cpu->set_f( lv_flags ).
+        rv_cycles = 15.
+
+      WHEN 106.  " ADC HL,HL
+        lv_hl = mo_cpu->get_hl( ).
+        lv_f = mo_cpu->get_f( ).
+        lv_carry_in = lv_f MOD 2.
+        lv_result = lv_hl + lv_hl + lv_carry_in.
+        lv_carry = 0.
+        IF lv_result >= 65536. lv_carry = 1. lv_result = lv_result MOD 65536. ENDIF.
+        lv_flags = 0.
+        IF lv_result = 0. lv_flags = lv_flags + zif_cpu_z80_core=>c_flag_z. ENDIF.
+        IF lv_result >= 32768. lv_flags = lv_flags + zif_cpu_z80_core=>c_flag_s. ENDIF.
+        IF lv_carry = 1. lv_flags = lv_flags + zif_cpu_z80_core=>c_flag_c. ENDIF.
+        lv_half = ( lv_hl MOD 4096 ) * 2 + lv_carry_in.
+        IF lv_half >= 4096. lv_flags = lv_flags + zif_cpu_z80_core=>c_flag_h. ENDIF.
+        lv_ov = 0.
+        IF lv_hl < 32768 AND lv_result >= 32768. lv_ov = 1. ENDIF.
+        IF lv_hl >= 32768 AND lv_result < 32768. lv_ov = 1. ENDIF.
+        IF lv_ov = 1. lv_flags = lv_flags + zif_cpu_z80_core=>c_flag_pv. ENDIF.
+        mo_cpu->set_hl( lv_result ).
+        mo_cpu->set_f( lv_flags ).
+        rv_cycles = 15.
+
+      WHEN 114.  " SBC HL,SP
+        lv_hl = mo_cpu->get_hl( ).
+        DATA(lv_sp2) = mo_cpu->get_sp( ).
+        lv_f = mo_cpu->get_f( ).
+        lv_carry_in = lv_f MOD 2.
+        lv_result = lv_hl - lv_sp2 - lv_carry_in.
+        lv_carry = 0.
+        IF lv_result < 0. lv_carry = 1. lv_result = lv_result + 65536. ENDIF.
+        lv_flags = zif_cpu_z80_core=>c_flag_n.
+        IF lv_result = 0. lv_flags = lv_flags + zif_cpu_z80_core=>c_flag_z. ENDIF.
+        IF lv_result >= 32768. lv_flags = lv_flags + zif_cpu_z80_core=>c_flag_s. ENDIF.
+        IF lv_carry = 1. lv_flags = lv_flags + zif_cpu_z80_core=>c_flag_c. ENDIF.
+        lv_half = ( lv_hl MOD 4096 ) - ( lv_sp2 MOD 4096 ) - lv_carry_in.
+        IF lv_half < 0. lv_flags = lv_flags + zif_cpu_z80_core=>c_flag_h. ENDIF.
+        lv_ov = 0.
+        IF lv_hl >= 32768 AND lv_sp2 < 32768 AND lv_result < 32768. lv_ov = 1. ENDIF.
+        IF lv_hl < 32768 AND lv_sp2 >= 32768 AND lv_result >= 32768. lv_ov = 1. ENDIF.
+        IF lv_ov = 1. lv_flags = lv_flags + zif_cpu_z80_core=>c_flag_pv. ENDIF.
+        mo_cpu->set_hl( lv_result ).
+        mo_cpu->set_f( lv_flags ).
+        rv_cycles = 15.
+
+      WHEN 122.  " ADC HL,SP
+        lv_hl = mo_cpu->get_hl( ).
+        DATA(lv_sp3) = mo_cpu->get_sp( ).
+        lv_f = mo_cpu->get_f( ).
+        lv_carry_in = lv_f MOD 2.
+        lv_result = lv_hl + lv_sp3 + lv_carry_in.
+        lv_carry = 0.
+        IF lv_result >= 65536. lv_carry = 1. lv_result = lv_result MOD 65536. ENDIF.
+        lv_flags = 0.
+        IF lv_result = 0. lv_flags = lv_flags + zif_cpu_z80_core=>c_flag_z. ENDIF.
+        IF lv_result >= 32768. lv_flags = lv_flags + zif_cpu_z80_core=>c_flag_s. ENDIF.
+        IF lv_carry = 1. lv_flags = lv_flags + zif_cpu_z80_core=>c_flag_c. ENDIF.
+        lv_half = ( lv_hl MOD 4096 ) + ( lv_sp3 MOD 4096 ) + lv_carry_in.
+        IF lv_half >= 4096. lv_flags = lv_flags + zif_cpu_z80_core=>c_flag_h. ENDIF.
+        lv_ov = 0.
+        IF lv_hl < 32768 AND lv_sp3 < 32768 AND lv_result >= 32768. lv_ov = 1. ENDIF.
+        IF lv_hl >= 32768 AND lv_sp3 >= 32768 AND lv_result < 32768. lv_ov = 1. ENDIF.
+        IF lv_ov = 1. lv_flags = lv_flags + zif_cpu_z80_core=>c_flag_pv. ENDIF.
+        mo_cpu->set_hl( lv_result ).
+        mo_cpu->set_f( lv_flags ).
+        rv_cycles = 15.
+
       " LD (nn),rr and LD rr,(nn)
       WHEN 67.  " LD (nn),BC
         lv_addr = mo_cpu->fetch_word( ).
@@ -356,7 +481,9 @@ CLASS zcl_cpu_z80_prefix_ed IMPLEMENTATION.
         mo_cpu->write_mem( iv_addr = lv_de iv_val = lv_val ).
         mo_cpu->set_hl( ( lv_hl + 1 ) MOD 65536 ).
         mo_cpu->set_de( ( lv_de + 1 ) MOD 65536 ).
-        lv_bc = ( lv_bc + 65535 ) MOD 65536.
+        IF lv_bc > 0.
+          lv_bc = lv_bc - 1.
+        ENDIF.
         mo_cpu->set_bc( lv_bc ).
         lv_f = mo_cpu->get_f( ).
         lv_f = ( lv_f DIV 64 ) * 64 + ( lv_f MOD 2 ).  " Clear H, P/V, N; keep S, Z, C
@@ -364,24 +491,28 @@ CLASS zcl_cpu_z80_prefix_ed IMPLEMENTATION.
         mo_cpu->set_f( lv_f ).
         rv_cycles = 16.
 
-      WHEN 176.  " LDIR
+      WHEN 176.  " LDIR - Execute full loop in one step (Python-compatible mode)
         lv_hl = mo_cpu->get_hl( ).
         lv_de = mo_cpu->get_de( ).
         lv_bc = mo_cpu->get_bc( ).
-        lv_val = mo_cpu->read_mem( lv_hl ).
-        mo_cpu->write_mem( iv_addr = lv_de iv_val = lv_val ).
-        mo_cpu->set_hl( ( lv_hl + 1 ) MOD 65536 ).
-        mo_cpu->set_de( ( lv_de + 1 ) MOD 65536 ).
-        lv_bc = ( lv_bc + 65535 ) MOD 65536.
-        mo_cpu->set_bc( lv_bc ).
-        lv_f = mo_cpu->get_f( ).
-        lv_f = ( lv_f DIV 64 ) * 64 + ( lv_f MOD 2 ).
-        mo_cpu->set_f( lv_f ).
-        IF lv_bc <> 0.
-          mo_cpu->set_pc( ( mo_cpu->get_pc( ) + 65534 ) MOD 65536 ).  " PC -= 2
-          rv_cycles = 21.
-        ELSE.
+        IF lv_bc = 0.
           rv_cycles = 16.
+        ELSE.
+          " Execute entire loop in one step
+          WHILE lv_bc > 0.
+            lv_val = mo_cpu->read_mem( lv_hl ).
+            mo_cpu->write_mem( iv_addr = lv_de iv_val = lv_val ).
+            lv_hl = ( lv_hl + 1 ) MOD 65536.
+            lv_de = ( lv_de + 1 ) MOD 65536.
+            lv_bc = lv_bc - 1.
+          ENDWHILE.
+          mo_cpu->set_hl( lv_hl ).
+          mo_cpu->set_de( lv_de ).
+          mo_cpu->set_bc( 0 ).
+          lv_f = mo_cpu->get_f( ).
+          lv_f = ( lv_f DIV 64 ) * 64 + ( lv_f MOD 2 ).  " Clear H, P/V, N
+          mo_cpu->set_f( lv_f ).
+          rv_cycles = 16.  " Final cycle count (simplified)
         ENDIF.
 
       WHEN 168.  " LDD
@@ -392,7 +523,9 @@ CLASS zcl_cpu_z80_prefix_ed IMPLEMENTATION.
         mo_cpu->write_mem( iv_addr = lv_de iv_val = lv_val ).
         mo_cpu->set_hl( ( lv_hl + 65535 ) MOD 65536 ).
         mo_cpu->set_de( ( lv_de + 65535 ) MOD 65536 ).
-        lv_bc = ( lv_bc + 65535 ) MOD 65536.
+        IF lv_bc > 0.
+          lv_bc = lv_bc - 1.
+        ENDIF.
         mo_cpu->set_bc( lv_bc ).
         lv_f = mo_cpu->get_f( ).
         lv_f = ( lv_f DIV 64 ) * 64 + ( lv_f MOD 2 ).
@@ -400,23 +533,27 @@ CLASS zcl_cpu_z80_prefix_ed IMPLEMENTATION.
         mo_cpu->set_f( lv_f ).
         rv_cycles = 16.
 
-      WHEN 184.  " LDDR
+      WHEN 184.  " LDDR - Execute full loop in one step (Python-compatible mode)
         lv_hl = mo_cpu->get_hl( ).
         lv_de = mo_cpu->get_de( ).
         lv_bc = mo_cpu->get_bc( ).
-        lv_val = mo_cpu->read_mem( lv_hl ).
-        mo_cpu->write_mem( iv_addr = lv_de iv_val = lv_val ).
-        mo_cpu->set_hl( ( lv_hl + 65535 ) MOD 65536 ).
-        mo_cpu->set_de( ( lv_de + 65535 ) MOD 65536 ).
-        lv_bc = ( lv_bc + 65535 ) MOD 65536.
-        mo_cpu->set_bc( lv_bc ).
-        lv_f = mo_cpu->get_f( ).
-        lv_f = ( lv_f DIV 64 ) * 64 + ( lv_f MOD 2 ).
-        mo_cpu->set_f( lv_f ).
-        IF lv_bc <> 0.
-          mo_cpu->set_pc( ( mo_cpu->get_pc( ) + 65534 ) MOD 65536 ).
-          rv_cycles = 21.
+        IF lv_bc = 0.
+          rv_cycles = 16.
         ELSE.
+          " Execute entire loop in one step
+          WHILE lv_bc > 0.
+            lv_val = mo_cpu->read_mem( lv_hl ).
+            mo_cpu->write_mem( iv_addr = lv_de iv_val = lv_val ).
+            lv_hl = ( lv_hl + 65535 ) MOD 65536.
+            lv_de = ( lv_de + 65535 ) MOD 65536.
+            lv_bc = lv_bc - 1.
+          ENDWHILE.
+          mo_cpu->set_hl( lv_hl ).
+          mo_cpu->set_de( lv_de ).
+          mo_cpu->set_bc( 0 ).
+          lv_f = mo_cpu->get_f( ).
+          lv_f = ( lv_f DIV 64 ) * 64 + ( lv_f MOD 2 ).
+          mo_cpu->set_f( lv_f ).
           rv_cycles = 16.
         ENDIF.
 

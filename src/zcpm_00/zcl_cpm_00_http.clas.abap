@@ -16,7 +16,6 @@ ENDCLASS.
 CLASS zcl_cpm_00_http IMPLEMENTATION.
 
   METHOD if_http_extension~handle_request.
-    " Parse URL parameters: ?disk=A or ?disk=MYFILES
     DATA(lv_disk) = server->request->get_form_field( 'disk' ).
     IF lv_disk IS INITIAL.
       lv_disk = 'A'.
@@ -47,8 +46,11 @@ CLASS zcl_cpm_00_http IMPLEMENTATION.
       |    * \{ box-sizing: border-box; \}{ lv_n }| &&
       |    body \{ background-color: #0a0a0a; display: flex; flex-direction: column; justify-content: center; align-items: center; min-height: 100vh; margin: 0; padding: 10px; font-family: 'Courier New', monospace; \}{ lv_n }| &&
       |    h1 \{ color: #FFB000; text-shadow: 0 0 10px #FFB000; margin-bottom: 10px; font-size: 1.5em; \}{ lv_n }| &&
+      |    #graphics-container \{ display: none; margin-bottom: 10px; border: 2px solid #0f0; border-radius: 8px; padding: 5px; background: #000; box-shadow: 0 0 20px rgba(0, 255, 0, 0.3); \}{ lv_n }| &&
+      |    #graphics-container svg \{ display: block; \}{ lv_n }| &&
       |    #terminal-container \{ border: 2px solid #FFB000; border-radius: 8px; padding: 10px; background: #000; box-shadow: 0 0 20px rgba(255, 176, 0, 0.3); overflow: hidden; width: 95vw; max-width: 1400px; \}{ lv_n }| &&
-      |    #terminal \{ width: 100%; height: 85vh; \}{ lv_n }| &&
+      |    #terminal \{ width: 100%; height: 70vh; \}{ lv_n }| &&
+      |    .has-graphics #terminal \{ height: 45vh; \}{ lv_n }| &&
       |    #status \{ color: #888; margin-top: 8px; font-size: 11px; \}{ lv_n }| &&
       |    .connected \{ color: #FFB000 !important; \}{ lv_n }| &&
       |    .disconnected \{ color: #ff4444 !important; \}{ lv_n }| &&
@@ -62,6 +64,7 @@ CLASS zcl_cpm_00_http IMPLEMENTATION.
       |</head>{ lv_n }| &&
       |<body>{ lv_n }| &&
       |  <h1>CP/M on SAP HANA</h1>{ lv_n }| &&
+      |  <div id="graphics-container"></div>{ lv_n }| &&
       |  <div id="terminal-container"><div id="terminal"></div></div>{ lv_n }| &&
       |  <div id="status">Disk: <span id="diskName">{ iv_disk }</span> - <span id="statusText" class="disconnected">Connecting...</span> - Ctrl+D: break</div>{ lv_n }| &&
       |  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>{ lv_n }| &&
@@ -87,6 +90,20 @@ CLASS zcl_cpm_00_http IMPLEMENTATION.
       |      document.getElementById('statusText').textContent = text;| &&
       |      document.getElementById('statusText').className = connected ? 'connected' : 'disconnected';| &&
       |    \}{ lv_n }| &&
+      |    function showGraphics(svgContent) \{| &&
+      |      const container = document.getElementById('graphics-container');| &&
+      |      container.innerHTML = svgContent;| &&
+      |      container.style.display = 'block';| &&
+      |      document.body.classList.add('has-graphics');| &&
+      |      fitAddon.fit();| &&
+      |    \}{ lv_n }| &&
+      |    function hideGraphics() \{| &&
+      |      const container = document.getElementById('graphics-container');| &&
+      |      container.style.display = 'none';| &&
+      |      container.innerHTML = '';| &&
+      |      document.body.classList.remove('has-graphics');| &&
+      |      fitAddon.fit();| &&
+      |    \}{ lv_n }| &&
       |    function connect() \{| &&
       |      const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';| &&
       |      const wsUrl = protocol + '//' + location.host + APC_PATH;| &&
@@ -99,12 +116,19 @@ CLASS zcl_cpm_00_http IMPLEMENTATION.
       |        socket.send('__DISK__=' + CPM_DISK);| &&
       |      \};{ lv_n }| &&
       |      socket.onmessage = (e) => \{| &&
-      |        term.write(e.data.replace(/\\r?\\n/g, '\\r\\n'));| &&
+      |        const data = e.data;| &&
+      |        if (data.startsWith('__GFX__')) \{| &&
+      |          const svg = data.substring(7);| &&
+      |          showGraphics(svg);| &&
+      |        \} else \{| &&
+      |          term.write(data.replace(/\\r?\\n/g, '\\r\\n'));| &&
+      |        \}| &&
       |      \};{ lv_n }| &&
       |      socket.onclose = () => \{| &&
       |        term.writeln('\\r\\n\\x1b[31m[DISCONNECTED]\\x1b[0m');| &&
       |        updateStatus('Disconnected', false);| &&
       |        currentLine = "";| &&
+      |        hideGraphics();| &&
       |      \};{ lv_n }| &&
       |      socket.onerror = () => \{| &&
       |        term.writeln('\\r\\n\\x1b[31m[CONNECTION ERROR]\\x1b[0m');| &&
@@ -118,6 +142,7 @@ CLASS zcl_cpm_00_http IMPLEMENTATION.
       |        term.writeln('^D');| &&
       |        socket.send('__EOF__');| &&
       |        currentLine = "";| &&
+      |        hideGraphics();| &&
       |      \} else if (code === 13) \{| &&
       |        term.write('\\r\\n');| &&
       |        socket.send(currentLine);| &&

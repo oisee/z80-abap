@@ -190,6 +190,12 @@ CLASS zcl_cpu_z80_bus_simple IMPLEMENTATION.
       RETURN.
     ENDIF.
 
+    " Spectrum keyboard port (0xFE) - return 0xFF = no key pressed
+    IF lv_port = 254.  " 0xFE
+      rv_val = 255.
+      RETURN.
+    ENDIF.
+
     " Read from I/O port string
     lv_pos = lv_port * 2.
     lv_hex = substring( val = mv_io_ports off = lv_pos len = 2 ).

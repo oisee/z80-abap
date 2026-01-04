@@ -1,151 +1,108 @@
 *&---------------------------------------------------------------------*
 *& Report ZCPM_FILE_SYNC
 *&---------------------------------------------------------------------*
-*& Upload files from local folder to ZCPM_00_BIN table
+*& Upload single file to ZCPM_00_BIN table
 *&---------------------------------------------------------------------*
 REPORT zcpm_file_sync.
 
 PARAMETERS:
-  p_folder TYPE string LOWER CASE OBLIGATORY,
-  p_disk   TYPE char30 DEFAULT 'A' OBLIGATORY.
+  p_file TYPE string LOWER CASE OBLIGATORY,
+  p_disk TYPE char30 DEFAULT 'A' OBLIGATORY.
 
-AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_folder.
-  DATA lv_folder TYPE string.
-  cl_gui_frontend_services=>directory_browse(
+AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_file.
+  DATA lt_files TYPE filetable.
+  DATA lv_rc TYPE i.
+  DATA lv_action TYPE i.
+
+  cl_gui_frontend_services=>file_open_dialog(
     EXPORTING
-      window_title = 'Select folder with CP/M files'
+      window_title = 'Select file to upload'
+      default_extension = '*'
+      file_filter = 'All Files (*.*)|*.*|COM Files (*.COM)|*.COM|TAP Files (*.TAP)|*.TAP'
     CHANGING
-      selected_folder = lv_folder
+      file_table = lt_files
+      rc = lv_rc
+      user_action = lv_action
     EXCEPTIONS
       OTHERS = 1 ).
-  IF sy-subrc = 0 AND lv_folder IS NOT INITIAL.
-    p_folder = lv_folder.
+
+  IF sy-subrc = 0 AND lv_action = cl_gui_frontend_services=>action_ok.
+    READ TABLE lt_files INTO DATA(ls_file) INDEX 1.
+    IF sy-subrc = 0.
+      p_file = ls_file-filename.
+    ENDIF.
   ENDIF.
 
-CLASS lcl_sync DEFINITION.
-  PUBLIC SECTION.
-    TYPES: tt_files TYPE STANDARD TABLE OF file_table WITH DEFAULT KEY.
-    CLASS-METHODS run
-      IMPORTING
-        iv_folder TYPE string
-        iv_disk   TYPE char30.
-  PRIVATE SECTION.
-    CLASS-METHODS get_file_list
-      IMPORTING
-        iv_folder      TYPE string
-      RETURNING
-        VALUE(rt_files) TYPE tt_files.
-    CLASS-METHODS upload_file
-      IMPORTING
-        iv_folder TYPE string
-        iv_file   TYPE clike
-        iv_disk   TYPE char30.
-ENDCLASS.
-
-CLASS lcl_sync IMPLEMENTATION.
-  METHOD run.
-    DATA(lt_files) = get_file_list( iv_folder ).
-
-    IF lt_files IS INITIAL.
-      WRITE: / 'No files found in folder:', iv_folder.
-      RETURN.
-    ENDIF.
-
-    WRITE: / 'Syncing files to disk:', iv_disk.
-    WRITE: / 'From folder:', iv_folder.
-    WRITE: / '---'.
-
-    LOOP AT lt_files INTO DATA(ls_file).
-      upload_file(
-        iv_folder = iv_folder
-        iv_file   = ls_file-filename
-        iv_disk   = iv_disk ).
-    ENDLOOP.
-
-    WRITE: / '---'.
-    WRITE: / 'Done. Files synced:', lines( lt_files ).
-  ENDMETHOD.
-
-  METHOD get_file_list.
-    DATA lv_count TYPE i.
-
-    cl_gui_frontend_services=>directory_list_files(
-      EXPORTING
-        directory = iv_folder
-        filter    = '*.*'
-        files_only = abap_true
-      CHANGING
-        file_table = rt_files
-        count      = lv_count
-      EXCEPTIONS
-        OTHERS     = 1 ).
-
-    IF sy-subrc <> 0.
-      WRITE: / 'Error listing directory:', iv_folder.
-    ENDIF.
-  ENDMETHOD.
-
-  METHOD upload_file.
-    DATA lt_bin TYPE TABLE OF x255.
-    DATA lv_size TYPE i.
-    DATA lv_path TYPE string.
-
-    " Build full path
-    lv_path = iv_folder && '\' && iv_file.
-
-    " Upload file as binary
-    cl_gui_frontend_services=>gui_upload(
-      EXPORTING
-        filename   = lv_path
-        filetype   = 'BIN'
-      IMPORTING
-        filelength = lv_size
-      CHANGING
-        data_tab   = lt_bin
-      EXCEPTIONS
-        OTHERS     = 1 ).
-
-    IF sy-subrc <> 0.
-      WRITE: / 'Error uploading:', iv_file.
-      RETURN.
-    ENDIF.
-
-    " Convert to xstring
-    DATA lv_xstring TYPE xstring.
-    CALL FUNCTION 'SCMS_BINARY_TO_XSTRING'
-      EXPORTING
-        input_length = lv_size
-      IMPORTING
-        buffer       = lv_xstring
-      TABLES
-        binary_tab   = lt_bin
-      EXCEPTIONS
-        OTHERS       = 1.
-
-    IF sy-subrc <> 0.
-      WRITE: / 'Error converting:', iv_file.
-      RETURN.
-    ENDIF.
-
-    " Prepare record
-    DATA ls_bin TYPE zcpm_00_bin.
-    ls_bin-bin   = iv_disk.
-    ls_bin-name  = to_upper( iv_file ).
-    ls_bin-v     = lv_xstring.
-    GET TIME STAMP FIELD ls_bin-ts.
-    ls_bin-cdate = sy-datum.
-
-    " Upsert
-    MODIFY zcpm_00_bin FROM ls_bin.
-    IF sy-subrc = 0.
-      WRITE: / 'Synced:', ls_bin-name, '(', lv_size, 'bytes )'.
-    ELSE.
-      WRITE: / 'Error saving:', ls_bin-name.
-    ENDIF.
-  ENDMETHOD.
-ENDCLASS.
-
 START-OF-SELECTION.
-  lcl_sync=>run(
-    iv_folder = p_folder
-    iv_disk   = p_disk ).
+  DATA lt_bin TYPE TABLE OF x255.
+  DATA lv_size TYPE i.
+  DATA lv_filename TYPE string.
+
+  " Extract filename from path
+  DATA(lv_pos) = 0.
+  DATA(lv_last_sep) = 0.
+  WHILE lv_pos < strlen( p_file ).
+    DATA(lv_ch) = p_file+lv_pos(1).
+    IF lv_ch = '\' OR lv_ch = '/'.
+      lv_last_sep = lv_pos + 1.
+    ENDIF.
+    lv_pos = lv_pos + 1.
+  ENDWHILE.
+  lv_filename = p_file+lv_last_sep.
+
+  WRITE: / 'Uploading:', lv_filename.
+  WRITE: / 'To disk:', p_disk.
+  WRITE: / '---'.
+
+  " Upload file as binary
+  cl_gui_frontend_services=>gui_upload(
+    EXPORTING
+      filename   = p_file
+      filetype   = 'BIN'
+    IMPORTING
+      filelength = lv_size
+    CHANGING
+      data_tab   = lt_bin
+    EXCEPTIONS
+      OTHERS     = 1 ).
+
+  IF sy-subrc <> 0.
+    WRITE: / 'Error uploading file!'.
+    RETURN.
+  ENDIF.
+
+  " Convert to xstring
+  DATA lv_xstring TYPE xstring.
+  CALL FUNCTION 'SCMS_BINARY_TO_XSTRING'
+    EXPORTING
+      input_length = lv_size
+    IMPORTING
+      buffer       = lv_xstring
+    TABLES
+      binary_tab   = lt_bin
+    EXCEPTIONS
+      OTHERS       = 1.
+
+  IF sy-subrc <> 0.
+    WRITE: / 'Error converting file!'.
+    RETURN.
+  ENDIF.
+
+  " Prepare record
+  DATA ls_bin TYPE zcpm_00_bin.
+  ls_bin-bin   = p_disk.
+  ls_bin-name  = to_upper( lv_filename ).
+  ls_bin-v     = lv_xstring.
+  GET TIME STAMP FIELD ls_bin-ts.
+  ls_bin-cdate = sy-datum.
+
+  " Upsert
+  MODIFY zcpm_00_bin FROM ls_bin.
+  IF sy-subrc = 0.
+    WRITE: / 'Success!'.
+    WRITE: / 'File:', ls_bin-name.
+    WRITE: / 'Size:', lv_size, 'bytes'.
+    WRITE: / 'Disk:', p_disk.
+  ELSE.
+    WRITE: / 'Error saving to database!'.
+  ENDIF.

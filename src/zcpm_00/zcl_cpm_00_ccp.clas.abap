@@ -27,7 +27,9 @@ CLASS zcl_cpm_00_ccp DEFINITION PUBLIC FINAL CREATE PUBLIC.
                 ev_program_data TYPE xstring
                 ev_program_name TYPE string
                 ev_program_args TYPE string
-                ev_spectrum_mode TYPE abap_bool.  " TAP file = Spectrum mode
+                ev_spectrum_mode TYPE abap_bool  " TAP file = Spectrum mode
+                ev_gfx_viewer TYPE abap_bool     " GFX viewer mode
+                ev_debug_mode TYPE abap_bool.    " Debug mode
 
     METHODS get_prompt RETURNING VALUE(rv_prompt) TYPE string.
     METHODS get_welcome RETURNING VALUE(rv_welcome) TYPE string.
@@ -106,7 +108,7 @@ CLASS zcl_cpm_00_ccp IMPLEMENTATION.
           lv_arg TYPE string,
           lv_upper TYPE string.
 
-    CLEAR: ev_output, ev_run_program, ev_program_data, ev_program_name, ev_program_args, ev_spectrum_mode.
+    CLEAR: ev_output, ev_run_program, ev_program_data, ev_program_name, ev_program_args, ev_spectrum_mode, ev_gfx_viewer, ev_debug_mode.
 
     lv_upper = to_upper( iv_command ).
     CONDENSE lv_upper.
@@ -183,6 +185,54 @@ CLASS zcl_cpm_00_ccp IMPLEMENTATION.
         ev_run_program = abap_true.
         ev_program_data = VALUE xstring( ).
         ev_program_name = '__DUMP80__'.
+
+      WHEN 'GFX'.
+        " Graphics viewer - load TAP and show all location graphics
+        IF lv_arg IS INITIAL.
+          ev_output = |Usage: GFX filename.TAP{ c_crlf }| &&
+                      |Shows all location graphics from a Spectrum TAP file{ c_crlf }|.
+        ELSE.
+          " Ensure .TAP extension
+          DATA(lv_gfx_file) = lv_arg.
+          IF NOT lv_gfx_file CS '.'.
+            lv_gfx_file = lv_gfx_file && '.TAP'.
+          ENDIF.
+          " Load the TAP file
+          DATA(lv_gfx_data) = load_bin_file( lv_gfx_file ).
+          IF lv_gfx_data IS INITIAL.
+            ev_output = |File not found: { lv_gfx_file }{ c_crlf }|.
+          ELSE.
+            ev_output = |Loading graphics viewer for { lv_gfx_file }...{ c_crlf }| &&
+                        |Press SPACE for next, Q to quit{ c_crlf }|.
+            ev_run_program = abap_true.
+            ev_program_data = lv_gfx_data.
+            ev_program_name = lv_gfx_file.
+            ev_spectrum_mode = abap_true.
+            ev_gfx_viewer = abap_true.
+          ENDIF.
+        ENDIF.
+
+      WHEN 'DEBUG'.
+        " Debug mode for TAP files - shows trace output
+        IF lv_arg IS INITIAL.
+          ev_output = |Usage: DEBUG filename.TAP{ c_crlf }|.
+        ELSE.
+          DATA(lv_dbg_file) = lv_arg.
+          IF NOT lv_dbg_file CS '.'.
+            lv_dbg_file = lv_dbg_file && '.TAP'.
+          ENDIF.
+          DATA(lv_dbg_data) = load_bin_file( lv_dbg_file ).
+          IF lv_dbg_data IS INITIAL.
+            ev_output = |File not found: { lv_dbg_file }{ c_crlf }|.
+          ELSE.
+            ev_output = |Loading { lv_dbg_file } in DEBUG mode...{ c_crlf }|.
+            ev_run_program = abap_true.
+            ev_program_data = lv_dbg_data.
+            ev_program_name = lv_dbg_file.
+            ev_spectrum_mode = abap_true.
+            ev_debug_mode = abap_true.
+          ENDIF.
+        ENDIF.
 
       WHEN 'EXIT' OR 'BYE' OR 'QUIT'.
         ev_output = |Goodbye!{ c_crlf }|.
@@ -345,6 +395,8 @@ CLASS zcl_cpm_00_ccp IMPLEMENTATION.
       |  DISK name      - Set bin disk (ZCPM_00_BIN){ c_crlf }| &&
       |  CLS            - Clear screen{ c_crlf }| &&
       |  VER            - Show version{ c_crlf }| &&
+      |  GFX file.TAP   - View location graphics{ c_crlf }| &&
+      |  DEBUG file.TAP - Run with debug trace{ c_crlf }| &&
       |  RESET          - Reset connection counter{ c_crlf }| &&
       |  HELP           - This help{ c_crlf }| &&
       |  EXIT           - End session{ c_crlf }| &&

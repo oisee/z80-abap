@@ -7,7 +7,8 @@ CLASS zcl_hobbit_emulator DEFINITION PUBLIC CREATE PUBLIC.
              param2 TYPE i,
              name   TYPE string,
            END OF ts_tap_block,
-           tt_tap_blocks TYPE STANDARD TABLE OF ts_tap_block WITH EMPTY KEY.
+           tt_tap_blocks TYPE STANDARD TABLE OF ts_tap_block WITH EMPTY KEY,
+           tt_locations TYPE STANDARD TABLE OF i WITH EMPTY KEY.
 
     CONSTANTS: c_entry_point    TYPE i VALUE 27648,  " 0x6C00
                c_print_char     TYPE i VALUE 34426,  " 0x867A
@@ -32,11 +33,22 @@ CLASS zcl_hobbit_emulator DEFINITION PUBLIC CREATE PUBLIC.
     METHODS get_graphics_svg RETURNING VALUE(rv_svg) TYPE string.
     METHODS has_pending_graphics RETURNING VALUE(rv_pending) TYPE abap_bool.
     METHODS clear_pending_graphics.
+    " Graphics mode control via port I/O (port 0xFB)
+    METHODS has_gfx_mode_change RETURNING VALUE(rv_changed) TYPE abap_bool.
+    METHODS get_gfx_mode_message RETURNING VALUE(rv_msg) TYPE string.
+    " GFX viewer mode - render graphics for specific location
+    METHODS render_location_gfx
+      IMPORTING iv_loc TYPE i
+      RETURNING VALUE(rv_svg) TYPE string.
+    METHODS get_gfx_locations
+      RETURNING VALUE(rt_locs) TYPE tt_locations.
+    METHODS set_debug_mode IMPORTING iv_debug TYPE abap_bool.
 
   PRIVATE SECTION.
     DATA mo_cpu TYPE REF TO zcl_cpu_z80.
     DATA mo_core TYPE REF TO zif_cpu_z80_core.
     DATA mo_bus TYPE REF TO zif_cpu_z80_bus.
+    DATA mo_hobbit_bus TYPE REF TO zcl_hobbit_bus.
     DATA mv_running TYPE abap_bool.
     DATA mv_waiting_input TYPE abap_bool.
     DATA mv_output TYPE string.
@@ -47,8 +59,7 @@ CLASS zcl_hobbit_emulator DEFINITION PUBLIC CREATE PUBLIC.
     DATA mv_current_location TYPE i.
     DATA mv_pen_x TYPE i.
     DATA mv_pen_y TYPE i.
-    DATA mv_hook_hit TYPE abap_bool.  " Flag to track any hook activity
-    " Debug counters for hooks
+    DATA mv_hook_hit TYPE abap_bool.
     DATA mv_cnt_print_char TYPE i.
     DATA mv_cnt_print_prop TYPE i.
     DATA mv_cnt_print_newline TYPE i.
@@ -63,12 +74,16 @@ CLASS zcl_hobbit_emulator DEFINITION PUBLIC CREATE PUBLIC.
     DATA mv_last_pc_count TYPE i.
     DATA mv_stuck_pc TYPE i.
     DATA mv_stuck_count TYPE i.
-
-    " Debug: execution trace
+    DATA mv_leading_spaces TYPE i.
+    DATA mv_skip_leading_spaces TYPE abap_bool.
+    DATA mv_current_column TYPE i.
+    DATA mv_consecutive_newlines TYPE i.
     DATA mt_exec_count TYPE STANDARD TABLE OF i WITH DEFAULT KEY.
-    DATA mt_pc_trace TYPE STANDARD TABLE OF i WITH DEFAULT KEY.  " Ring buffer for last 100 PCs
-    DATA mv_trace_idx TYPE i.  " Current index in ring buffer
+    DATA mt_pc_trace TYPE STANDARD TABLE OF i WITH DEFAULT KEY.
+    DATA mv_trace_idx TYPE i.
     DATA mv_trace_enabled TYPE abap_bool.
+    DATA mv_debug_mode TYPE abap_bool.
+    DATA mv_last_was_plus TYPE abap_bool.  " Track consecutive '+' for echo
 
     METHODS parse_tap IMPORTING iv_data TYPE xstring
                       RETURNING VALUE(rt_blocks) TYPE tt_tap_blocks.
@@ -98,23 +113,20 @@ ENDCLASS.
 CLASS zcl_hobbit_emulator IMPLEMENTATION.
 
   METHOD constructor.
-    DATA lo_bus TYPE REF TO zcl_cpu_z80_bus_simple.
-    CREATE OBJECT lo_bus.
-    mo_bus = lo_bus.
+    CREATE OBJECT mo_hobbit_bus.
+    mo_bus = mo_hobbit_bus.
     CREATE OBJECT mo_cpu EXPORTING io_bus = mo_bus.
     mo_core = mo_cpu.
     mv_running = abap_false.
     mv_waiting_input = abap_false.
     mv_pending_graphics = abap_false.
     mv_current_location = 0.
-    DO 45056 TIMES.
+    DO 32768 TIMES.
       APPEND 0 TO mt_pixels.
     ENDDO.
-    " Initialize exec counter for all 64K addresses
     DO 65536 TIMES.
       APPEND 0 TO mt_exec_count.
     ENDDO.
-    " Initialize ring buffer for last 100 PCs
     DO 100 TIMES.
       APPEND 0 TO mt_pc_trace.
     ENDDO.
@@ -136,14 +148,16 @@ CLASS zcl_hobbit_emulator IMPLEMENTATION.
         lv_loaded = lv_loaded + 1.
       ENDIF.
     ENDLOOP.
-    " Set ROM stubs AFTER loading game (game data at addr 5 would overwrite stubs)
     setup_rom_stubs( ).
-    DATA lv_hex TYPE string.
-    lv_hex = |{ c_entry_point }|.
     mv_output = mv_output && |Loaded { lv_loaded } blocks, starting at PC={ c_entry_point } (0x6C00) SP=65280 (0xFF00)| && cl_abap_char_utilities=>newline.
     mo_core->set_pc( c_entry_point ).
     mo_core->set_sp( 65280 ).
     mv_running = abap_true.
+    mv_leading_spaces = 0.
+    mv_skip_leading_spaces = abap_true.
+    mv_current_column = 0.
+    mv_consecutive_newlines = 0.
+    mv_last_was_plus = abap_false.
   ENDMETHOD.
 
   METHOD parse_tap.
@@ -156,7 +170,6 @@ CLASS zcl_hobbit_emulator IMPLEMENTATION.
     DATA lv_i TYPE i.
     DATA lv_ch TYPE c LENGTH 1.
     DATA lv_name TYPE string.
-
     lv_len = xstrlen( iv_data ).
     WHILE lv_pos < lv_len - 2.
       lv_byte = iv_data+lv_pos(1).
@@ -230,27 +243,24 @@ CLASS zcl_hobbit_emulator IMPLEMENTATION.
   ENDMETHOD.
 
   METHOD setup_rom_stubs.
-    " Only set specific RST vectors (like Python emulator)
-    " ROM area defaults to 0x00 (NOP) - game may rely on this
-    write_byte( iv_addr = 0 iv_val = 201 ).     " RST 0x00 = RET
-    write_byte( iv_addr = 8 iv_val = 201 ).     " RST 0x08 = RET
-    write_byte( iv_addr = 16 iv_val = 201 ).    " RST 0x10 = RET
-    write_byte( iv_addr = 24 iv_val = 201 ).    " RST 0x18 = RET
-    write_byte( iv_addr = 32 iv_val = 201 ).    " RST 0x20 = RET
-    write_byte( iv_addr = 40 iv_val = 201 ).    " RST 0x28 = RET (Calculator)
-    write_byte( iv_addr = 48 iv_val = 201 ).    " RST 0x30 = RET
-    write_byte( iv_addr = 56 iv_val = 251 ).    " RST 0x38 = EI
-    write_byte( iv_addr = 57 iv_val = 201 ).    "           + RET
-    write_byte( iv_addr = 102 iv_val = 201 ).   " NMI 0x66 = RET
+    write_byte( iv_addr = 0 iv_val = 201 ).
+    write_byte( iv_addr = 8 iv_val = 201 ).
+    write_byte( iv_addr = 16 iv_val = 201 ).
+    write_byte( iv_addr = 24 iv_val = 201 ).
+    write_byte( iv_addr = 32 iv_val = 201 ).
+    write_byte( iv_addr = 40 iv_val = 201 ).
+    write_byte( iv_addr = 48 iv_val = 201 ).
+    write_byte( iv_addr = 56 iv_val = 251 ).
+    write_byte( iv_addr = 57 iv_val = 201 ).
+    write_byte( iv_addr = 102 iv_val = 201 ).
   ENDMETHOD.
 
   METHOD run.
     DATA lv_cycles TYPE i VALUE 0.
     DATA lv_pc TYPE i.
     DATA lv_idle_cycles TYPE i VALUE 0.
-    CONSTANTS lc_idle_limit TYPE i VALUE 50000.  " Stop after 50K cycles of no activity
+    CONSTANTS lc_idle_limit TYPE i VALUE 0.
     mo_bus->clear_output( ).
-    " Reset hook counters for this run
     CLEAR: mv_cnt_print_char, mv_cnt_print_prop, mv_cnt_print_newline,
            mv_cnt_print_msg, mv_cnt_get_key, mv_cnt_draw, mv_cnt_wait,
            mv_debug_chars, mv_first_char_cycle,
@@ -261,19 +271,15 @@ CLASS zcl_hobbit_emulator IMPLEMENTATION.
         EXIT.
       ENDIF.
       lv_pc = mo_core->get_pc( ).
-      " Crash detection: PC in invalid low memory (not RST vectors)
       IF lv_pc < 256 AND lv_pc <> 0 AND lv_pc <> 8 AND lv_pc <> 16 AND lv_pc <> 24 AND
          lv_pc <> 32 AND lv_pc <> 40 AND lv_pc <> 48 AND lv_pc <> 56 AND lv_pc <> 57 AND lv_pc <> 102.
         mv_output = mv_output && |[CRASH] PC={ lv_pc } at cycle { lv_cycles }| && cl_abap_char_utilities=>newline.
       ENDIF.
-      " Stop if we hit invalid ROM area (256-16383, not RST vectors)
       IF lv_pc >= 256 AND lv_pc < 16384.
         mv_output = mv_output && |[ROM ERROR] PC={ lv_pc } at cycle { lv_cycles }| && cl_abap_char_utilities=>newline.
         EXIT.
       ENDIF.
-      " Track hook activity - reset idle counter when hooks are hit
       mv_cycle_counter = lv_cycles.
-      " Track most common PC (to find stuck loops)
       IF lv_pc = mv_last_pc.
         mv_last_pc_count = mv_last_pc_count + 1.
         IF mv_last_pc_count > mv_stuck_count.
@@ -287,34 +293,30 @@ CLASS zcl_hobbit_emulator IMPLEMENTATION.
       IF step( ) = abap_false.
         EXIT.
       ENDIF.
-      " Check if any hook was hit (including draw, wait, etc.)
       IF mv_hook_hit = abap_true.
-        lv_idle_cycles = 0.  " Reset idle counter on any hook activity
+        lv_idle_cycles = 0.
       ELSE.
         lv_idle_cycles = lv_idle_cycles + 1.
       ENDIF.
-      " Stop if idle too long (no hooks producing output)
-      IF lv_idle_cycles > lc_idle_limit.
+      IF lc_idle_limit > 0 AND lv_idle_cycles > lc_idle_limit.
         mv_output = mv_output && |[Idle timeout after { lv_cycles } cycles at PC={ lv_pc }]| && cl_abap_char_utilities=>newline.
         EXIT.
       ENDIF.
       lv_cycles = lv_cycles + 1.
     ENDWHILE.
     lv_pc = mo_core->get_pc( ).
-    IF mv_waiting_input = abap_false AND lv_cycles >= iv_max_cycles.
-      " Only show if hit absolute limit (not idle timeout or waiting)
-      mv_output = mv_output && |[Max cycles { lv_cycles } at PC={ lv_pc }]| && cl_abap_char_utilities=>newline.
-    ENDIF.
-    " Debug: show hook counts and raw chars
-    mv_output = mv_output && |[Hooks: char={ mv_cnt_print_char } prop={ mv_cnt_print_prop } nl={ mv_cnt_print_newline }| &&
-                             | msg={ mv_cnt_print_msg } key={ mv_cnt_get_key } draw={ mv_cnt_draw } wait={ mv_cnt_wait }]| &&
-                             cl_abap_char_utilities=>newline.
-    mv_output = mv_output && |[Raw: { mv_debug_chars }]| && cl_abap_char_utilities=>newline.
-    mv_output = mv_output && |[First char at cycle { mv_first_char_cycle }]| && cl_abap_char_utilities=>newline.
-    IF mv_stuck_count > 1000.
-      DATA lv_hex TYPE string.
-      lv_hex = |{ mv_stuck_pc ALIGN = RIGHT WIDTH = 4 PAD = '0' }|.
-      mv_output = mv_output && |[Stuck at PC={ mv_stuck_pc } hit { mv_stuck_count } times]| && cl_abap_char_utilities=>newline.
+    IF mv_debug_mode = abap_true.
+      IF mv_waiting_input = abap_false AND lv_cycles >= iv_max_cycles.
+        mv_output = mv_output && |[Max cycles { lv_cycles } at PC={ lv_pc }]| && cl_abap_char_utilities=>newline.
+      ENDIF.
+      mv_output = mv_output && |[Hooks: char={ mv_cnt_print_char } prop={ mv_cnt_print_prop } nl={ mv_cnt_print_newline }| &&
+                               | msg={ mv_cnt_print_msg } key={ mv_cnt_get_key } draw={ mv_cnt_draw } wait={ mv_cnt_wait }]| &&
+                               cl_abap_char_utilities=>newline.
+      mv_output = mv_output && |[Raw: { mv_debug_chars }]| && cl_abap_char_utilities=>newline.
+      mv_output = mv_output && |[First char at cycle { mv_first_char_cycle }]| && cl_abap_char_utilities=>newline.
+      IF mv_stuck_count > 1000.
+        mv_output = mv_output && |[Stuck at PC={ mv_stuck_pc } hit { mv_stuck_count } times]| && cl_abap_char_utilities=>newline.
+      ENDIF.
     ENDIF.
     rv_output = mv_output.
   ENDMETHOD.
@@ -331,7 +333,7 @@ CLASS zcl_hobbit_emulator IMPLEMENTATION.
   METHOD check_hooks.
     DATA lv_pc TYPE i.
     lv_pc = mo_core->get_pc( ).
-    mv_hook_hit = abap_false.  " Reset before checking
+    mv_hook_hit = abap_false.
     CASE lv_pc.
       WHEN c_print_char.
         mv_cnt_print_char = mv_cnt_print_char + 1.
@@ -342,11 +344,9 @@ CLASS zcl_hobbit_emulator IMPLEMENTATION.
         hook_print_prop( ). rv_handled = abap_true. mv_hook_hit = abap_true.
       WHEN c_print_newline.
         mv_cnt_print_newline = mv_cnt_print_newline + 1.
-        " Like Python: observe but let original code run
         hook_print_newline( ). rv_handled = abap_false. mv_hook_hit = abap_true.
       WHEN c_print_msg.
         mv_cnt_print_msg = mv_cnt_print_msg + 1.
-        " Like Python: don't intercept - let token decoder run
         hook_print_msg( ). rv_handled = abap_false. mv_hook_hit = abap_true.
       WHEN c_get_key.
         mv_cnt_get_key = mv_cnt_get_key + 1.
@@ -368,34 +368,77 @@ CLASS zcl_hobbit_emulator IMPLEMENTATION.
   ENDMETHOD.
 
   METHOD hook_print_prop.
-    output_char( mo_core->get_a( ) ).
+    DATA lv_char TYPE i.
+    DATA lv_ch TYPE c LENGTH 1.
+    lv_char = mo_core->get_a( ).
+    IF lv_char >= 32 AND lv_char < 127.
+      IF lv_char = 32.
+        mv_leading_spaces = mv_leading_spaces + 1.
+        IF mv_skip_leading_spaces = abap_true.
+        ELSEIF mv_leading_spaces >= 8 AND mv_current_column > 0.
+          mv_consecutive_newlines = mv_consecutive_newlines + 1.
+          IF mv_consecutive_newlines <= 2.
+            mv_output = mv_output && cl_abap_char_utilities=>newline.
+          ENDIF.
+          mv_current_column = 0.
+          mv_leading_spaces = 0.
+          mv_skip_leading_spaces = abap_true.
+        ENDIF.
+      ELSE.
+        IF mv_leading_spaces >= 1 AND mv_leading_spaces < 8 AND mv_skip_leading_spaces = abap_false.
+          mv_output = mv_output && | |.
+          mv_current_column = mv_current_column + 1.
+        ENDIF.
+        mv_leading_spaces = 0.
+        mv_skip_leading_spaces = abap_false.
+        " Filter out '+' which is a formatting artifact
+        IF lv_char <> 43.
+          lv_ch = cl_abap_conv_in_ce=>uccpi( lv_char ).
+          mv_output = mv_output && lv_ch.
+          mv_current_column = mv_current_column + 1.
+          mv_consecutive_newlines = 0.
+        ENDIF.
+      ENDIF.
+    ELSEIF lv_char = 13 OR lv_char = 10.
+      mv_consecutive_newlines = mv_consecutive_newlines + 1.
+      IF mv_consecutive_newlines <= 2.
+        mv_output = mv_output && cl_abap_char_utilities=>newline.
+      ENDIF.
+      mv_current_column = 0.
+      mv_leading_spaces = 0.
+      mv_skip_leading_spaces = abap_true.
+    ELSEIF lv_char = 127.
+      mv_leading_spaces = 0.
+      mv_output = mv_output && |(C)|.
+      mv_current_column = mv_current_column + 3.
+    ENDIF.
     do_ret( ).
   ENDMETHOD.
 
   METHOD hook_print_newline.
-    " 0x8583 - Print newline routine
-    " Let original code run - it will call print_char with CR (0x0D)
-    " which our output_char handles. Don't output here to avoid doubles.
+    " Output newline - this is the main source of line breaks
+    " Only output if we have content on the line (like Python's logic)
+    IF mv_current_column > 0.
+      mv_output = mv_output && cl_abap_char_utilities=>newline.
+      mv_consecutive_newlines = 1.
+    ELSE.
+      " Already at start of line - check consecutive counter
+      mv_consecutive_newlines = mv_consecutive_newlines + 1.
+      IF mv_consecutive_newlines <= 2.
+        mv_output = mv_output && cl_abap_char_utilities=>newline.
+      ENDIF.
+    ENDIF.
+    mv_current_column = 0.
+    mv_leading_spaces = 0.
+    mv_skip_leading_spaces = abap_true.
+    " Don't call do_ret - let original code run for game state updates
   ENDMETHOD.
 
   METHOD hook_print_msg.
-    " 0x72DD - PrintMsg routine
-    " Like Python: DON'T intercept - let real token decoder run
-    " Individual characters will be captured by print_char hook (0x867A)
-    " DO NOT call do_ret() - let original code run
   ENDMETHOD.
 
   METHOD hook_get_key.
     DATA lv_char TYPE i.
-    DATA lv_loc TYPE i.
-    IF mv_pending_graphics = abap_false.
-      lv_loc = read_byte( 23487 ).
-      IF lv_loc <> mv_current_location AND lv_loc > 0.
-        mv_current_location = lv_loc.
-        render_graphics( lv_loc ).
-        mv_pending_graphics = abap_true.
-      ENDIF.
-    ENDIF.
     IF lines( mt_auto_commands ) > 0.
       DATA lv_cmd TYPE string.
       READ TABLE mt_auto_commands INTO lv_cmd INDEX 1.
@@ -419,26 +462,28 @@ CLASS zcl_hobbit_emulator IMPLEMENTATION.
   ENDMETHOD.
 
   METHOD hook_draw.
+    DATA lv_loc TYPE i.
+    DATA lv_gfx_enabled TYPE i.
+    DATA lv_gfx_addr TYPE i.
+    lv_gfx_enabled = read_byte( 46855 ).
+    lv_loc = mo_core->get_a( ).
+    lv_gfx_addr = find_gfx_addr( lv_loc ).
+    IF mv_debug_mode = abap_true.
+      mv_output = mv_output && |[DRAW:loc={ lv_loc } gfx={ lv_gfx_enabled } addr={ lv_gfx_addr }]|.
+    ENDIF.
+    IF lv_gfx_enabled <> 0 AND lv_loc > 0 AND lv_gfx_addr > 0.
+      mv_current_location = lv_loc.
+      mv_pending_graphics = abap_true.
+    ENDIF.
     do_ret( ).
   ENDMETHOD.
 
   METHOD hook_wait.
-    " 0x6C6D and 0x969A are keyboard polling LOOPS, not subroutines!
-    " The loop at 0x6C6D:
-    "   0x6C6D: AF       XOR A
-    "   0x6C6E: DB FE    IN A,(0xFE)
-    "   0x6C70: E6 1F    AND 0x1F
-    "   0x6C72: FE 1F    CP 0x1F
-    "   0x6C74: 28 F7    JR Z,-9  (back to 0x6C6D)
-    "   0x6C76: ...      continue here
-    " We skip the loop by jumping to the instruction after the JR Z
     DATA lv_pc TYPE i.
     lv_pc = mo_core->get_pc( ).
-    IF lv_pc = c_initial_wait.  " 0x6C6D
-      mo_core->set_pc( 27766 ).  " 0x6C76 - after the wait loop
-    ELSEIF lv_pc = c_wait_key2.  " 0x969A
-      " Similar keyboard wait - need to find exit point
-      " For now, skip 9 bytes like the other wait loop
+    IF lv_pc = c_initial_wait.
+      mo_core->set_pc( 27766 ).
+    ELSEIF lv_pc = c_wait_key2.
       mo_core->set_pc( c_wait_key2 + 9 ).
     ENDIF.
   ENDMETHOD.
@@ -453,8 +498,8 @@ CLASS zcl_hobbit_emulator IMPLEMENTATION.
   ENDMETHOD.
 
   METHOD output_char.
+    " Match Python _hook_print_char logic exactly
     DATA lv_ch TYPE c LENGTH 1.
-    " Debug: track raw characters (first 200 chars)
     IF strlen( mv_debug_chars ) < 200.
       IF iv_char < 32.
         mv_debug_chars = mv_debug_chars && |<{ iv_char }>|.
@@ -465,26 +510,58 @@ CLASS zcl_hobbit_emulator IMPLEMENTATION.
         mv_debug_chars = mv_debug_chars && |[{ iv_char }]|.
       ENDIF.
     ENDIF.
-    " Handle control characters
-    IF iv_char = 13 OR iv_char = 10.  " CR/LF
-      mv_output = mv_output && cl_abap_char_utilities=>newline.
-    ELSEIF iv_char = 8.  " Backspace - ignore for now
-      " Could implement: remove last char from mv_output
-    ELSEIF iv_char >= 32 AND iv_char < 127.
-      " Printable ASCII
-      IF iv_char = 43.  " Skip "+" - formatting artifact in Hobbit
-        RETURN.
+    IF iv_char = 13 OR iv_char = 10.
+      " CR/LF - newline
+      mv_consecutive_newlines = mv_consecutive_newlines + 1.
+      IF mv_consecutive_newlines <= 2.
+        mv_output = mv_output && cl_abap_char_utilities=>newline.
       ENDIF.
-      lv_ch = cl_abap_conv_in_ce=>uccpi( iv_char ).
-      mv_output = mv_output && lv_ch.
-    ELSEIF iv_char = 127.  " Copyright symbol
+      mv_current_column = 0.
+      mv_leading_spaces = 0.
+      mv_skip_leading_spaces = abap_true.
+    ELSEIF iv_char = 8.
+      " Backspace - ignore for now
+    ELSEIF iv_char = 32.
+      " Space - use delayed space logic like Python
+      mv_leading_spaces = mv_leading_spaces + 1.
+      IF mv_skip_leading_spaces = abap_true.
+        " Skip leading spaces
+      ELSEIF mv_leading_spaces >= 8 AND mv_current_column > 0.
+        " Column positioning - convert to newline
+        mv_output = mv_output && cl_abap_char_utilities=>newline.
+        mv_current_column = 0.
+        mv_leading_spaces = 0.
+        mv_skip_leading_spaces = abap_true.
+      ENDIF.
+      " else: accumulating spaces, wait to see if more follow
+    ELSEIF iv_char > 32 AND iv_char < 127.
+      " Non-space printable - output any pending single spaces first
+      IF mv_leading_spaces >= 1 AND mv_leading_spaces < 8 AND mv_skip_leading_spaces = abap_false.
+        mv_output = mv_output && | |.
+        mv_current_column = mv_current_column + 1.
+      ENDIF.
+      mv_leading_spaces = 0.
+      mv_skip_leading_spaces = abap_false.
+      " Filter out '+' which is a formatting artifact
+      IF iv_char <> 43.
+        lv_ch = cl_abap_conv_in_ce=>uccpi( iv_char ).
+        mv_output = mv_output && lv_ch.
+        mv_current_column = mv_current_column + 1.
+      ENDIF.
+      mv_consecutive_newlines = 0.
+    ELSEIF iv_char = 127.
+      mv_leading_spaces = 0.
       mv_output = mv_output && |(C)|.
-    ELSEIF iv_char >= 128 AND iv_char <= 143.  " Spectrum block graphics
+      mv_current_column = mv_current_column + 3.
+    ELSEIF iv_char >= 128 AND iv_char <= 143.
+      mv_leading_spaces = 0.
       mv_output = mv_output && |#|.
-    ELSEIF iv_char >= 144.  " UDGs (User Defined Graphics)
+      mv_current_column = mv_current_column + 1.
+    ELSEIF iv_char >= 144.
+      mv_leading_spaces = 0.
       mv_output = mv_output && |?|.
+      mv_current_column = mv_current_column + 1.
     ENDIF.
-    " Other control chars (0-31 except CR/LF/BS) - ignore
   ENDMETHOD.
 
   METHOD provide_input.
@@ -531,12 +608,22 @@ CLASS zcl_hobbit_emulator IMPLEMENTATION.
   ENDMETHOD.
 
   METHOD find_gfx_addr.
-    DATA lv_taddr TYPE i.
-    lv_taddr = c_graphics_table + iv_loc * 2.
-    rv_addr = read_byte( lv_taddr ) + read_byte( lv_taddr + 1 ) * 256.
-    IF rv_addr < 16384 OR rv_addr > 65535.
-      rv_addr = 0.
-    ENDIF.
+    DATA lv_addr TYPE i.
+    DATA lv_entry_loc TYPE i.
+    DATA lv_data_start TYPE i VALUE 52291.
+    lv_addr = c_graphics_table.
+    WHILE lv_addr < lv_data_start.
+      lv_entry_loc = read_byte( lv_addr ).
+      IF lv_entry_loc = 255.
+        EXIT.
+      ENDIF.
+      IF lv_entry_loc = iv_loc.
+        rv_addr = read_byte( lv_addr + 1 ) + read_byte( lv_addr + 2 ) * 256.
+        RETURN.
+      ENDIF.
+      lv_addr = lv_addr + 3.
+    ENDWHILE.
+    rv_addr = 0.
   ENDMETHOD.
 
   METHOD parse_gfx_cmds.
@@ -547,40 +634,49 @@ CLASS zcl_hobbit_emulator IMPLEMENTATION.
     DATA lv_nx TYPE i.
     DATA lv_ny TYPE i.
     DATA lv_cnt TYPE i VALUE 0.
+    DATA lv_next_byte TYPE i.
+    DATA lv_d TYPE i.
+    DATA lv_n TYPE i.
+    DATA lv_m TYPE i.
     lv_addr = iv_addr.
     mv_pen_x = 0.
     mv_pen_y = 0.
-    WHILE lv_cnt < 1000.
+    lv_addr = lv_addr + 2.
+    WHILE lv_cnt < 2000.
       lv_cmd = read_byte( lv_addr ).
       lv_addr = lv_addr + 1.
-      IF lv_cmd = 0 OR lv_cmd = 255.
+      lv_cnt = lv_cnt + 1.
+      IF lv_cmd = 0.
         EXIT.
       ELSEIF lv_cmd = 8.
         mv_pen_x = read_byte( lv_addr ).
         lv_addr = lv_addr + 1.
-        mv_pen_y = read_byte( lv_addr ).
+        mv_pen_y = 127 - read_byte( lv_addr ).
         lv_addr = lv_addr + 1.
-      ELSEIF lv_cmd >= 128.
-        DATA lv_d TYPE i.
-        DATA lv_n TYPE i.
-        DATA lv_m TYPE i.
+        set_pixel( iv_x = mv_pen_x iv_y = mv_pen_y ).
+      ELSEIF lv_cmd > 127.
+        lv_next_byte = read_byte( lv_addr ).
+        lv_addr = lv_addr + 1.
         lv_d = lv_cmd MOD 8.
-        lv_n = read_byte( lv_addr ).
-        lv_addr = lv_addr + 1.
-        lv_m = read_byte( lv_addr ).
-        lv_addr = lv_addr + 1.
+        lv_n = lv_next_byte MOD 64.
+        lv_m = ( ( lv_cmd MOD 128 ) / 2 ) + ( lv_next_byte / 64 ).
         draw_line( EXPORTING iv_x = mv_pen_x iv_y = mv_pen_y iv_d = lv_d iv_n = lv_n iv_m = lv_m
                    IMPORTING ev_x = lv_nx ev_y = lv_ny ).
         mv_pen_x = lv_nx.
         mv_pen_y = lv_ny.
-      ELSEIF lv_cmd >= 64.
+      ELSEIF lv_cmd > 63.
         lv_x = read_byte( lv_addr ).
         lv_addr = lv_addr + 1.
-        lv_y = read_byte( lv_addr ).
+        lv_y = 127 - read_byte( lv_addr ).
         lv_addr = lv_addr + 1.
         flood_fill( iv_x = lv_x iv_y = lv_y ).
+      ELSEIF lv_cmd > 31.
+        lv_addr = lv_addr + 2.
+        WHILE read_byte( lv_addr ) <> 255.
+          lv_addr = lv_addr + 1.
+        ENDWHILE.
+        lv_addr = lv_addr + 1.
       ENDIF.
-      lv_cnt = lv_cnt + 1.
     ENDWHILE.
   ENDMETHOD.
 
@@ -599,7 +695,7 @@ CLASS zcl_hobbit_emulator IMPLEMENTATION.
       WHILE lv_i <= iv_n.
         set_pixel( iv_x = lv_x iv_y = lv_y ).
         IF iv_d MOD 4 >= 2.
-          IF lv_y < 175. lv_y = lv_y + 1. ELSE. EXIT. ENDIF.
+          IF lv_y < 127. lv_y = lv_y + 1. ELSE. EXIT. ENDIF.
         ELSE.
           IF lv_y > 0. lv_y = lv_y - 1. ELSE. EXIT. ENDIF.
         ENDIF.
@@ -627,7 +723,7 @@ CLASS zcl_hobbit_emulator IMPLEMENTATION.
         IF lv_m <= 0.
           lv_m = lv_m0.
           IF iv_d MOD 4 >= 2.
-            IF lv_y < 175. lv_y = lv_y + 1. ELSE. EXIT. ENDIF.
+            IF lv_y < 127. lv_y = lv_y + 1. ELSE. EXIT. ENDIF.
           ELSE.
             IF lv_y > 0. lv_y = lv_y - 1. ELSE. EXIT. ENDIF.
           ENDIF.
@@ -643,7 +739,7 @@ CLASS zcl_hobbit_emulator IMPLEMENTATION.
 
   METHOD set_pixel.
     DATA lv_idx TYPE i.
-    IF iv_x >= 0 AND iv_x < 256 AND iv_y >= 0 AND iv_y < 176.
+    IF iv_x >= 0 AND iv_x < 256 AND iv_y >= 0 AND iv_y < 128.
       lv_idx = iv_y * 256 + iv_x + 1.
       MODIFY mt_pixels INDEX lv_idx FROM 1.
     ENDIF.
@@ -652,7 +748,7 @@ CLASS zcl_hobbit_emulator IMPLEMENTATION.
   METHOD clear_screen.
     DATA lv_i TYPE i.
     lv_i = 1.
-    WHILE lv_i <= 45056.
+    WHILE lv_i <= 32768.
       MODIFY mt_pixels INDEX lv_i FROM 0.
       lv_i = lv_i + 1.
     ENDWHILE.
@@ -668,7 +764,7 @@ CLASS zcl_hobbit_emulator IMPLEMENTATION.
     DATA lv_y TYPE i.
     DATA lv_n TYPE i.
     DATA lv_iter TYPE i VALUE 0.
-    IF iv_x < 0 OR iv_x >= 256 OR iv_y < 0 OR iv_y >= 176.
+    IF iv_x < 0 OR iv_x >= 256 OR iv_y < 0 OR iv_y >= 128.
       RETURN.
     ENDIF.
     lv_idx = iv_y * 256 + iv_x + 1.
@@ -685,7 +781,7 @@ CLASS zcl_hobbit_emulator IMPLEMENTATION.
       DELETE lt_stk INDEX lv_n.
       lv_x = ls_pt-x.
       lv_y = ls_pt-y.
-      IF lv_x < 0 OR lv_x >= 256 OR lv_y < 0 OR lv_y >= 176.
+      IF lv_x < 0 OR lv_x >= 256 OR lv_y < 0 OR lv_y >= 128.
         CONTINUE.
       ENDIF.
       lv_idx = lv_y * 256 + lv_x + 1.
@@ -703,27 +799,140 @@ CLASS zcl_hobbit_emulator IMPLEMENTATION.
   ENDMETHOD.
 
   METHOD get_graphics_svg.
-    DATA lv_x TYPE i.
-    DATA lv_y TYPE i.
-    DATA lv_idx TYPE i.
-    DATA lv_val TYPE i.
-    DATA lv_rects TYPE string.
-    rv_svg = |<svg viewBox="0 0 256 176" width="512" height="352" xmlns="http://www.w3.org/2000/svg">| &&
-             |<rect width="256" height="176" fill="#000"/><g fill="#0f0">|.
-    lv_y = 0.
-    WHILE lv_y < 176.
-      lv_x = 0.
-      WHILE lv_x < 256.
-        lv_idx = lv_y * 256 + lv_x + 1.
-        READ TABLE mt_pixels INTO lv_val INDEX lv_idx.
-        IF lv_val <> 0.
-          lv_rects = lv_rects && |<rect x="{ lv_x }" y="{ lv_y }" width="1" height="1"/>|.
-        ENDIF.
-        lv_x = lv_x + 1.
-      ENDWHILE.
-      lv_y = lv_y + 1.
+    DATA lv_addr TYPE i.
+    DATA lv_start TYPE i.
+    DATA lv_op TYPE i.
+    DATA lv_cnt TYPE i VALUE 0.
+    DATA lv_xbyte TYPE x LENGTH 1.
+    DATA lv_xstr TYPE xstring.
+    lv_addr = find_gfx_addr( mv_current_location ).
+    lv_start = lv_addr.
+    IF mv_debug_mode = abap_true.
+      mv_output = mv_output && |[SVG:loc={ mv_current_location } addr={ lv_addr }]|.
+    ENDIF.
+    IF lv_addr = 0.
+      rv_svg = ''.
+      RETURN.
+    ENDIF.
+    lv_addr = lv_addr + 2.
+    WHILE lv_cnt < 2000.
+      lv_op = read_byte( lv_addr ).
+      lv_addr = lv_addr + 1.
+      lv_cnt = lv_cnt + 1.
+      IF lv_op = 0.
+        EXIT.
+      ELSEIF lv_op = 8.
+        lv_addr = lv_addr + 2.
+      ELSEIF lv_op > 127.
+        lv_addr = lv_addr + 1.
+      ELSEIF lv_op > 63.
+        lv_addr = lv_addr + 2.
+      ELSEIF lv_op > 31.
+        lv_addr = lv_addr + 2.
+        WHILE read_byte( lv_addr ) <> 255 AND lv_addr < lv_start + 2000.
+          lv_addr = lv_addr + 1.
+        ENDWHILE.
+        lv_addr = lv_addr + 1.
+      ENDIF.
     ENDWHILE.
-    rv_svg = rv_svg && lv_rects && |</g></svg>|.
+    DATA lv_len TYPE i.
+    DATA lv_i TYPE i.
+    DATA lv_b TYPE i.
+    lv_len = lv_addr - lv_start.
+    lv_i = 0.
+    WHILE lv_i < lv_len.
+      lv_b = read_byte( lv_start + lv_i ).
+      lv_xbyte = lv_b.
+      lv_xstr = lv_xstr && lv_xbyte.
+      lv_i = lv_i + 1.
+    ENDWHILE.
+    rv_svg = lv_xstr.
+    IF mv_debug_mode = abap_true.
+      mv_output = mv_output && |[HEX:{ xstrlen( lv_xstr ) }bytes]|.
+    ENDIF.
+  ENDMETHOD.
+
+  METHOD has_gfx_mode_change.
+    IF mo_hobbit_bus IS BOUND.
+      rv_changed = mo_hobbit_bus->has_gfx_change( ).
+    ELSE.
+      rv_changed = abap_false.
+    ENDIF.
+  ENDMETHOD.
+
+  METHOD get_gfx_mode_message.
+    IF mo_hobbit_bus IS BOUND.
+      rv_msg = mo_hobbit_bus->get_gfx_message( ).
+    ELSE.
+      rv_msg = ''.
+    ENDIF.
+  ENDMETHOD.
+
+  METHOD render_location_gfx.
+    DATA lv_addr TYPE i.
+    DATA lv_start TYPE i.
+    DATA lv_op TYPE i.
+    DATA lv_cnt TYPE i VALUE 0.
+    DATA lv_xbyte TYPE x LENGTH 1.
+    DATA lv_xstr TYPE xstring.
+    lv_addr = find_gfx_addr( iv_loc ).
+    lv_start = lv_addr.
+    IF lv_addr = 0.
+      rv_svg = ''.
+      RETURN.
+    ENDIF.
+    lv_addr = lv_addr + 2.
+    WHILE lv_cnt < 2000.
+      lv_op = read_byte( lv_addr ).
+      lv_addr = lv_addr + 1.
+      lv_cnt = lv_cnt + 1.
+      IF lv_op = 0.
+        EXIT.
+      ELSEIF lv_op = 8.
+        lv_addr = lv_addr + 2.
+      ELSEIF lv_op > 127.
+        lv_addr = lv_addr + 1.
+      ELSEIF lv_op > 63.
+        lv_addr = lv_addr + 2.
+      ELSEIF lv_op > 31.
+        lv_addr = lv_addr + 2.
+        WHILE read_byte( lv_addr ) <> 255 AND lv_addr < lv_start + 2000.
+          lv_addr = lv_addr + 1.
+        ENDWHILE.
+        lv_addr = lv_addr + 1.
+      ENDIF.
+    ENDWHILE.
+    DATA lv_len TYPE i.
+    DATA lv_i TYPE i.
+    DATA lv_b TYPE i.
+    lv_len = lv_addr - lv_start.
+    lv_i = 0.
+    WHILE lv_i < lv_len.
+      lv_b = read_byte( lv_start + lv_i ).
+      lv_xbyte = lv_b.
+      lv_xstr = lv_xstr && lv_xbyte.
+      lv_i = lv_i + 1.
+    ENDWHILE.
+    rv_svg = lv_xstr.
+  ENDMETHOD.
+
+  METHOD get_gfx_locations.
+    DATA lv_addr TYPE i.
+    DATA lv_loc TYPE i.
+    DATA lv_data_start TYPE i VALUE 52291.
+    lv_addr = c_graphics_table.
+    WHILE lv_addr < lv_data_start.
+      lv_loc = read_byte( lv_addr ).
+      IF lv_loc = 255.
+        EXIT.
+      ENDIF.
+      APPEND lv_loc TO rt_locs.
+      lv_addr = lv_addr + 3.
+    ENDWHILE.
+  ENDMETHOD.
+
+  METHOD set_debug_mode.
+    mv_debug_mode = iv_debug.
   ENDMETHOD.
 
 ENDCLASS.

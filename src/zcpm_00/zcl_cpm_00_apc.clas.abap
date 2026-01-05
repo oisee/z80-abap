@@ -24,6 +24,9 @@ CLASS zcl_cpm_00_apc DEFINITION
     DATA mv_running_program TYPE abap_bool.
     DATA mv_spectrum_mode TYPE abap_bool.
     DATA mv_disk TYPE char30 VALUE 'A'.
+    DATA mv_gfx_viewer TYPE abap_bool.
+    DATA mt_gfx_locs TYPE zcl_hobbit_emulator=>tt_locations.
+    DATA mv_gfx_idx TYPE i.
 
     CLASS-METHODS increment_connections.
     CLASS-METHODS decrement_connections.
@@ -38,6 +41,7 @@ CLASS zcl_cpm_00_apc DEFINITION
     METHODS load_bin_file IMPORTING iv_name TYPE string RETURNING VALUE(rv_data) TYPE xstring.
     METHODS load_smw0_file IMPORTING iv_name TYPE string RETURNING VALUE(rv_data) TYPE xstring.
     METHODS parse_disk_command IMPORTING iv_text TYPE string RETURNING VALUE(rv_disk) TYPE char30.
+    METHODS show_gfx_location IMPORTING i_message_manager TYPE REF TO if_apc_wsp_message_manager.
 ENDCLASS.
 
 CLASS zcl_cpm_00_apc IMPLEMENTATION.
@@ -69,6 +73,7 @@ CLASS zcl_cpm_00_apc IMPLEMENTATION.
     mo_cpm = NEW zcl_cpm_emulator( ).
     mv_running_program = abap_false.
     mv_spectrum_mode = abap_false.
+    mv_gfx_viewer = abap_false.
 
     send_text( i_message_manager = i_message_manager iv_text = get_welcome_banner( ) ).
     send_text( i_message_manager = i_message_manager iv_text = |Session: { mv_session_id(8) }  Active: { lv_count }{ c_crlf }| ).
@@ -82,7 +87,9 @@ CLASS zcl_cpm_00_apc IMPLEMENTATION.
           lv_program_data TYPE xstring,
           lv_program_name TYPE string,
           lv_program_args TYPE string,
-          lv_spectrum_mode TYPE abap_bool.
+          lv_spectrum_mode TYPE abap_bool,
+          lv_gfx_viewer TYPE abap_bool,
+          lv_debug_mode TYPE abap_bool.
 
     DATA(lv_input) = i_message->get_text( ).
 
@@ -99,6 +106,31 @@ CLASS zcl_cpm_00_apc IMPLEMENTATION.
       RETURN.
     ENDIF.
 
+    IF mv_gfx_viewer = abap_true.
+      DATA(lv_upper_input) = to_upper( lv_input ).
+      IF lv_upper_input = 'Q' OR lv_input = '__EOF__'.
+        mv_gfx_viewer = abap_false.
+        mv_running_program = abap_false.
+        send_text( i_message_manager = i_message_manager iv_text = |__GFXV__0| ).
+        send_text( i_message_manager = i_message_manager iv_text = |{ c_crlf }GFX viewer closed{ c_crlf }| ).
+        send_prompt( i_message_manager ).
+        RETURN.
+      ENDIF.
+      IF lv_input = '__NEXT__' OR lv_upper_input = 'N' OR lv_upper_input = ''.
+        mv_gfx_idx = mv_gfx_idx + 1.
+        IF mv_gfx_idx > lines( mt_gfx_locs ).
+          mv_gfx_idx = 1.
+        ENDIF.
+      ELSEIF lv_input = '__PREV__' OR lv_upper_input = 'P'.
+        mv_gfx_idx = mv_gfx_idx - 1.
+        IF mv_gfx_idx < 1.
+          mv_gfx_idx = lines( mt_gfx_locs ).
+        ENDIF.
+      ENDIF.
+      show_gfx_location( i_message_manager ).
+      RETURN.
+    ENDIF.
+
     IF lv_input = '__EOF__'.
       IF mv_running_program = abap_true.
         mv_running_program = abap_false.
@@ -112,7 +144,8 @@ CLASS zcl_cpm_00_apc IMPLEMENTATION.
 
     IF mv_running_program = abap_true AND mv_spectrum_mode = abap_true.
       IF mo_hobbit IS BOUND AND mo_hobbit->is_waiting_input( ) = abap_true.
-        mo_hobbit->provide_input( lv_input && cl_abap_char_utilities=>cr_lf ).
+        " Send only CR (first char of cr_lf), not full CRLF - LF causes double-enter
+        mo_hobbit->provide_input( lv_input && c_crlf+0(1) ).
         run_hobbit_and_output( i_message_manager ).
         RETURN.
       ENDIF.
@@ -131,7 +164,9 @@ CLASS zcl_cpm_00_apc IMPLEMENTATION.
                 ev_program_data = lv_program_data
                 ev_program_name = lv_program_name
                 ev_program_args = lv_program_args
-                ev_spectrum_mode = lv_spectrum_mode ).
+                ev_spectrum_mode = lv_spectrum_mode
+                ev_gfx_viewer = lv_gfx_viewer
+                ev_debug_mode = lv_debug_mode ).
 
     IF lv_output IS NOT INITIAL.
       send_text( i_message_manager = i_message_manager iv_text = lv_output ).
@@ -149,9 +184,30 @@ CLASS zcl_cpm_00_apc IMPLEMENTATION.
     IF lv_run_program = abap_true AND lv_program_data IS NOT INITIAL.
       mv_running_program = abap_true.
 
-      IF lv_spectrum_mode = abap_true.
+      IF lv_gfx_viewer = abap_true.
+        mv_gfx_viewer = abap_true.
         mv_spectrum_mode = abap_true.
         mo_hobbit = NEW zcl_hobbit_emulator( ).
+        mo_hobbit->load_tap( lv_program_data ).
+        mt_gfx_locs = mo_hobbit->get_gfx_locations( ).
+        mv_gfx_idx = 1.
+        send_text( i_message_manager = i_message_manager iv_text = |__GFXV__1| ).
+        send_text( i_message_manager = i_message_manager
+                   iv_text = |Found { lines( mt_gfx_locs ) } locations with graphics{ c_crlf }| ).
+        IF lines( mt_gfx_locs ) > 0.
+          show_gfx_location( i_message_manager ).
+        ELSE.
+          mv_gfx_viewer = abap_false.
+          mv_running_program = abap_false.
+          send_text( i_message_manager = i_message_manager iv_text = |__GFXV__0| ).
+          send_text( i_message_manager = i_message_manager iv_text = |No graphics found{ c_crlf }| ).
+          send_prompt( i_message_manager ).
+        ENDIF.
+
+      ELSEIF lv_spectrum_mode = abap_true.
+        mv_spectrum_mode = abap_true.
+        mo_hobbit = NEW zcl_hobbit_emulator( ).
+        mo_hobbit->set_debug_mode( lv_debug_mode ).
         mo_hobbit->load_tap( lv_program_data ).
         run_hobbit_and_output( i_message_manager ).
       ELSE.
@@ -253,6 +309,11 @@ CLASS zcl_cpm_00_apc IMPLEMENTATION.
       mo_hobbit->clear_pending_graphics( ).
     ENDIF.
 
+    IF mo_hobbit->has_gfx_mode_change( ) = abap_true.
+      DATA(lv_gfx_msg) = mo_hobbit->get_gfx_mode_message( ).
+      send_text( i_message_manager = i_message_manager iv_text = lv_gfx_msg ).
+    ENDIF.
+
     DATA(lv_output) = mo_hobbit->get_output( ).
     IF lv_output IS NOT INITIAL.
       REPLACE ALL OCCURRENCES OF cl_abap_char_utilities=>newline IN lv_output WITH c_crlf.
@@ -264,6 +325,22 @@ CLASS zcl_cpm_00_apc IMPLEMENTATION.
       mv_spectrum_mode = abap_false.
       send_text( i_message_manager = i_message_manager iv_text = c_crlf ).
       send_prompt( i_message_manager ).
+    ENDIF.
+  ENDMETHOD.
+
+  METHOD show_gfx_location.
+    DATA lv_loc TYPE i.
+    IF mv_gfx_idx < 1 OR mv_gfx_idx > lines( mt_gfx_locs ).
+      RETURN.
+    ENDIF.
+    READ TABLE mt_gfx_locs INTO lv_loc INDEX mv_gfx_idx.
+    send_text( i_message_manager = i_message_manager
+               iv_text = |{ c_crlf }Location { lv_loc } ({ mv_gfx_idx }/{ lines( mt_gfx_locs ) })...{ c_crlf }| ).
+    DATA(lv_gfx) = mo_hobbit->render_location_gfx( lv_loc ).
+    IF lv_gfx IS NOT INITIAL.
+      send_text( i_message_manager = i_message_manager iv_text = |__GFX__{ lv_gfx }| ).
+    ELSE.
+      send_text( i_message_manager = i_message_manager iv_text = |(No graphics data){ c_crlf }| ).
     ENDIF.
   ENDMETHOD.
 
